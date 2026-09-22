@@ -1,213 +1,138 @@
-# SCBD TikTok LIVE V0.6.0 - REAL INTEGRATION
+# SCBD TikTok Live Probe V0.1
 
-Bản này xâu chuỗi các phần **đã test thành công trước đây** thành một controller Termux duy nhất.
-Không cần build APK mới. APK baseline hiện tại vẫn là **V0.5.9E / HOTFIX8**.
+Bản thử độc lập để kiểm tra xem dữ liệu realtime của một phiên TikTok LIVE có thể được quan sát từ WebView trên Android hay không.
 
-## Luồng hoàn chỉnh
+## Mục tiêu
 
-```text
-TikTok LIVE thật
-   │
-   └─ TikTools WSS
-        │
-        ├─ comment "1" / "2" -> khóa Team P1/P2 cho cả session
-        ├─ gift -> tính điểm -> Top1 realtime của từng team
-        └─ /pick 1..28 -> chỉ Top1 team thắng được quyền chọn
-                 │
-                 ▼
-SCBD_TIKTOK_LIVE_V0_6_0 Controller (Termux, 127.0.0.1:8797)
-        │
-        ├─ UDP 127.0.0.1:8796 -> APK native Winner / Pick / Timeout
-        │
-        └─ PPSSPP Remote Debugger 127.0.0.1:9000
-                 │
-                 ├─ đọc HP thật P1/P2
-                 ├─ phát hiện KO thật
-                 ├─ GATE=3 + STATE3 -> outro thật
-                 ├─ quay về Training
-                 ├─ Full Character Select
-                 ├─ P1 = pick Top1 hoặc Random30 khi timeout
-                 ├─ P2 = Random30
-                 └─ map -> trận kế tiếp
-```
+Nhập TikTok ID, ví dụ:
 
-## Các quy tắc được giữ nguyên
+`@flo1234`
 
-- Viewer comment `1` -> Team P1.
-- Viewer comment `2` -> Team P2.
-- Team bị khóa cho toàn session, không đổi phe.
-- Gift chỉ tính điểm sau khi viewer đã chọn team.
-- TikTools gift streak chỉ tính khi `repeatEnd=true`.
-- Top1 của **team thắng tại thời điểm KO** được chụp lại và có quyền `/pick`.
-- Chỉ đúng Top1 đó được `/pick 1..28` trong 15 giây.
-- First valid pick locks.
-- `/pick 14 = KRATOS` giữ nguyên.
-- Exact pick 1..28 tự map về source slot gốc, bỏ Custom slot 18 và Random slot 30.
-- Timeout: native chỉ hiện `TIME OUT / GAME RANDOM`; controller đưa P1 tới source slot 30 để Soulcalibur tự random.
-- P2 trận sau luôn source slot 30 Random.
-- Điểm/team lock tồn tại qua nhiều trận cho tới khi bấm `RESET SESSION`.
+App mở:
 
-## Bước cài trên ROG Phone 6
+`https://www.tiktok.com/@flo1234/live`
 
-### 1. Dừng Bridge cũ
+Sau đó probe ghi log từ 4 lớp:
 
-Nếu Termux đang chạy `START_NATIVE_BRIDGE.sh`, bấm:
+1. `WS_*` — WebSocket được tạo / frame nhận được.
+2. `FETCH_*` và `XHR_*` — request/response có URL liên quan live/webcast/gift/comment/rank.
+3. `NET_URL` — resource URL do Android WebView thấy.
+4. `DOM` — text mới xuất hiện trên trang, dùng làm fallback.
 
-```bash
-Ctrl+C
-```
+Bản này KHÔNG đọc hoặc xuất:
+- mật khẩu;
+- cookie;
+- localStorage;
+- token đăng nhập.
 
-V0.6.0 dùng lại port `8797`, nên không chạy bridge cũ cùng lúc.
-
-### 2. Giải nén
-
-Đặt ZIP vào Download rồi chạy:
-
-```bash
-cd /storage/emulated/0/Download
-unzip -o SCBD_TIKTOK_LIVE_V0_6_0R1_REAL_INTEGRATION.zip -d SCBD_LIVE_V060R1
-cd SCBD_LIVE_V060R1
-```
-
-### 3. Chạy offline test một lần
-
-```bash
-bash TEST_OFFLINE.sh
-```
-
-Phải có:
-
-```text
-SCBD V0.6.0R1 OFFLINE TEST: PASS
-```
-
-### 4. Chạy controller thật
-
-```bash
-bash START_SCBD_TIKTOK_LIVE.sh
-```
-
-Lần đầu script sẽ tự cài module `ws` bằng npm nếu máy chưa có.
-
-### 5. Mở trang điều khiển
-
-```text
-http://127.0.0.1:8797/
-```
-
-Trên trang phải kiểm tra:
-
-- `Native APK = ONLINE`
-- `PPSSPP = CONNECTED`
-- Game phase sẽ thành `ARMED` khi đang ở Training Combat và cả P1/P2 còn HP.
-
-Nếu `PPSSPP = OFFLINE`, bật **PPSSPP Remote Debugger** như môi trường test cũ của dự án tại:
-
-```text
-ws://127.0.0.1:9000/debugger
-subprotocol: debugger.ppsspp.org
-```
-
-## Kết nối TikTok LIVE thật
-
-Trang control có 2 ô:
-
-1. TikTok LIVE input
-   - `@username`
-   - username trần
-   - link `https://www.tiktok.com/@username/live`
-   - link TikTok rút gọn/share link
-
-2. `TikTools API Key`
-
-Bấm **KẾT NỐI LIVE**.
-
-Khi thành công, trạng thái sẽ hiện dạng:
-
-```text
-CONNECTED @username | room <roomId>
-```
-
-> API key không được ghi vào file cấu hình của gói. Nó chỉ nằm trong RAM của controller trong phiên đang chạy.
-
-## Test thật theo thứ tự
-
-1. Hai viewer comment `1` và `2` để vào hai team.
-2. Viewer đã có team gửi gift.
-3. Xem Top P1/P2 thay đổi trên control page.
-4. Chơi trận trong Training Combat tới khi một bên KO thật.
-5. APK hiện winner theo Top1 team thắng.
-6. Chờ Winner Intro xong, Top1 team thắng comment ví dụ:
-
-```text
-/pick 14
-```
-
-7. APK phải hiện `KRATOS` + Locked In.
-8. Sau outro, controller tự vào Full Character Select.
-9. P1 tự đi tới Kratos source slot 14, P2 đi Random30.
-10. Map tự xác nhận và trận mới bắt đầu.
-
-Nếu Top1 không pick trong 15 giây:
-
-```text
-TIME OUT -> P1 source slot 30 Random -> game tự chọn
-```
-
-## Điểm quà
-
-File `gift_rules.txt` cho phép đặt rule riêng:
-
-```text
-Rose=30
-GG=30
-Finger Heart=250
-```
-
-Có thể sửa ngay trên control page rồi bấm **LƯU GIFT RULES**.
-
-Quà không có rule riêng dùng fallback:
-
-```text
-diamondCount * repeatCount
-```
-
-## Những gì V0.6.0 chưa giả vờ là đã xong
-
-- TikTok avatar URL đã đi cùng dữ liệu Winner, nhưng APK hiện tại **chưa tải/render avatar TikTok thật thành texture native**.
-- Top leaderboard thật đang hiển thị trên control page; protocol native hiện tại chưa có packet đồng bộ toàn bộ Top5 vào HUD native.
-- Gift heal HP / damage trực tiếp trong trận là hạng mục tương lai, không được bật lén trong bản này.
-- Portrait lớn Locked In vẫn giữ baseline HOTFIX8, đã chốt là còn nợ polish hình ảnh.
-
-Những phần trên không cản luồng thật: team -> gift -> Top1 -> KO -> winner -> `/pick` -> Character Select -> trận kế tiếp.
+Nó chỉ dùng để xác định con đường realtime nào đang mang comment/gift vào trang LIVE.
 
 ---
 
-## V0.6.0R1 - Live Safety Hotfix
+## Build APK bằng điện thoại + GitHub Actions
 
-R1 không rebuild APK và không thay mapping nhân vật. Chỉ gia cố controller trước khi dùng LIVE thật:
+1. Tạo một repository GitHub trống.
+2. Upload TOÀN BỘ nội dung của thư mục project này vào repo.
+3. Mở tab **Actions**.
+4. Chọn **Build SCBD TikTok Live Probe APK**.
+5. Chọn **Run workflow**.
+6. Khi workflow xanh, tải artifact:
+   `SCBD-TikTok-Live-Probe-V0.1-APK`
+7. Giải nén artifact và cài:
+   `SCBD_TikTok_Live_Probe_V0_1.apk`
 
-- Dedupe gift theo `transactionId` trong 6 giờ để tránh cộng điểm hai lần khi event bị retry.
-- Gift frame bị thiếu `user` vẫn có thể nhận diện bằng `senderUserId` của TikTools v3.
-- Nhận cả event `chat` chuẩn hiện tại và alias `comment` để tương thích dữ liệu cũ.
-- Giữ nguyên `repeatEnd=true` cho gift combo, Team Lock, Top1 snapshot, `/pick 1..28`, timeout Random30.
+Không cần Android Studio trên điện thoại.
 
-## Đang ngồi ở PC nhưng game vẫn chạy trên ROG Phone 6
+---
 
-Đây là cách nên dùng cho baseline hiện tại. **Không chuyển battle controller sang PC**, vì APK native UDP `8796` và PPSSPP Remote Debugger `9000` hiện đều là loopback trên điện thoại.
+## Cách test
 
-1. Trên ROG Phone 6: chạy APK HOTFIX8 + Termux controller V0.6.0R1.
-2. Cắm điện thoại vào PC, bật USB debugging.
-3. Trên PC, giải nén gói này và chạy:
+### Test A — mở LIVE
 
-```text
-PC_CONTROL_WINDOWS.bat
-```
+1. Mở app.
+2. Nhập `@ID` streamer đang LIVE.
+3. Bấm **MỞ LIVE**.
+4. Chờ trang TikTok LIVE tải xong.
 
-File BAT sẽ chạy:
+Ở thanh trạng thái nên thấy:
 
-```text
-adb forward tcp:8797 tcp:8797
-```
+`docStart=YES`
 
-sau đó mở `http://127.0.0.1:8797/` trên trình duyệt PC. Như vậy TikTok/game logic vẫn chạy local trên điện thoại, nhưng toàn bộ bảng điều khiển có thể thao tác từ PC.
+Nếu `docStart=NO`, app vẫn chạy nhưng WebSocket hook có thể bỏ lỡ kết nối được tạo rất sớm.
+
+### Test B — comment
+
+1. Bấm **MARK**.
+2. Từ một tài khoản TikTok khác, gửi comment rất dễ tìm, ví dụ:
+
+`SCBDTEST12345`
+
+3. Chờ 3–10 giây.
+4. Bấm **MARK** lần nữa.
+5. Xem log có:
+   - `DOM ... SCBDTEST12345`
+   - `WS_TEXT`
+   - `WS_BIN`
+   - `FETCH_BODY` / `XHR_BODY`
+   - hoặc URL chứa `webcast`, `im/fetch`, `comment`, `message`.
+
+### Test C — gift
+
+1. Bấm **MARK**.
+2. Một viewer gửi 1 gift rẻ nhất.
+3. Bấm **MARK** lần nữa sau khi gift hiện trên LIVE.
+4. Bấm **XUẤT LOG**.
+
+Log được lưu vào thư mục Download với tên dạng:
+
+`SCBD_LIVE_PROBE_20260922_181500.txt`
+
+Gửi file log đó lại để phân tích.
+
+---
+
+## Cách đọc kết quả nhanh
+
+### Trường hợp tốt nhất
+
+Có nhiều:
+
+`[WS_BIN] {"len":...,"b64":"..."}`
+
+đúng ngay lúc comment/gift xuất hiện.
+
+=> TikTok đang đẩy realtime qua binary WebSocket. Bước sau sẽ là xác định envelope/protobuf và decoder.
+
+### Nếu có `WS_TEXT`
+
+=> Dễ hơn nhiều. Có thể parser trực tiếp nội dung text/JSON.
+
+### Nếu không có WS nhưng có `FETCH/XHR`
+
+=> TikTok Web trên phiên bản WebView này có thể dùng polling/fetch stream thay vì `window.WebSocket`.
+
+### Nếu chỉ có `DOM`
+
+=> Ta vẫn chứng minh được dữ liệu xuất hiện trong WebView, nhưng DOM scraping chỉ nên dùng fallback vì giao diện TikTok có thể đổi class/markup.
+
+### Nếu trang LIVE không mở
+
+TikTok có thể:
+- chặn embedded WebView;
+- yêu cầu xác minh/captcha/login;
+- redirect sang trang khác.
+
+Khi đó log `PAGE`, `NET_URL` và ảnh màn hình sẽ cho biết lớp nào bị chặn.
+
+---
+
+## Tiêu chí PASS V0.1
+
+Chỉ cần đạt một trong hai:
+
+1. Comment test xuất hiện trong `DOM`, hoặc
+2. Có network/WS event mới xuất hiện đúng thời điểm comment/gift.
+
+Chưa cần decode gift hoàn chỉnh ở V0.1.
+
+Mục tiêu của V0.1 là tìm **đường ống dữ liệu thật** trước.

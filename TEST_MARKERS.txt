@@ -1,0 +1,15 @@
+SCBD TikTok Live Probe V0.1
+
+COMMENT TEST:
+SCBDTEST12345
+
+Test sequence:
+MARK
+viewer comment SCBDTEST12345
+MARK
+
+Gift sequence:
+MARK
+viewer sends one cheapest gift
+MARK
+EXPORT LOG
