@@ -1,0 +1,14 @@
+{
+  "name": "scbd-tiktok-live-v060",
+  "version": "0.6.0-r1",
+  "private": true,
+  "description": "Soulcalibur Broken Destiny Viewer Battle Mode - real TikTok LIVE integration R1 live-safety hotfix",
+  "main": "scbd_tiktok_live_v060.js",
+  "scripts": {
+    "start": "node scbd_tiktok_live_v060.js",
+    "test": "node test_v060.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}

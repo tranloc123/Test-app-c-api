@@ -1,0 +1,37 @@
+{
+  "version": "0.6.0",
+  "name": "SCBD TikTok LIVE REAL INTEGRATION",
+  "apk_baseline": "V0.5.9E / HOTFIX8",
+  "apk_rebuild_required": false,
+  "control_http": "127.0.0.1:8797",
+  "native_udp": "127.0.0.1:8796",
+  "ppsspp_debugger": "ws://127.0.0.1:9000/debugger",
+  "tiktok_provider": "TikTools WSS",
+  "features": [
+    "real TikTok comments",
+    "session team lock P1/P2",
+    "real TikTok gifts and score",
+    "Top1 per team",
+    "real P1/P2 KO detection",
+    "native winner overlay",
+    "winner Top1 /pick 1..28 authority",
+    "native pick success/timeout",
+    "exact source-slot resolver",
+    "automatic Full Character Select",
+    "P2 Random30",
+    "automatic next training round"
+  ],
+  "known_not_native_yet": [
+    "real TikTok avatar texture rendering",
+    "native live Top5 packet",
+    "gift heal/damage gameplay"
+  ],
+  "release": "V0.6.0R1",
+  "base_apk": "V0.5.9E/HOTFIX8 (unchanged)",
+  "live_safety": [
+    "gift transactionId dedupe",
+    "senderUserId fallback",
+    "chat/comment compatibility",
+    "PC ADB control helper"
+  ]
+}
