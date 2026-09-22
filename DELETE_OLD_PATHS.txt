@@ -1,0 +1,1 @@
+Sau khi upload patch, file cũ app/src/main/java/com/flogb/scbdliveprobe/MainActivity.java có thể để lại nhưng sẽ không được compile nếu namespace/source package khác? Để sạch repo nên xóa thư mục app/src/main/java/com/flogb/scbdliveprobe và file app/src/main/assets/probe.js cũ.
