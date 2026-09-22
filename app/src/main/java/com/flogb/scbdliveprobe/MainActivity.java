@@ -1,11 +1,8 @@
-package com.flogb.scbdliveprobe;
+package com.flogb.scbddevshell;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.content.ClipData;
-import android.content.ClipboardManager;
 import android.content.ContentValues;
-import android.content.Context;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -18,12 +15,9 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
-import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
-import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -38,61 +32,91 @@ import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
 import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileOutputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Date;
 import java.util.Locale;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.regex.Pattern;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
+
+    private static final String PROBE_URL = "http://127.0.0.1:8788/probe.js";
+    private static final String VERSION_URL = "http://127.0.0.1:8788/probe_version.txt";
+    private static final int DISPLAY_LINES = 70;
+    private static final int MAX_LOG_CHARS = 700_000;
 
     private WebView webView;
     private EditText userInput;
     private TextView statusView;
     private TextView logView;
     private ScrollView logScroll;
+    private Button captureBtn;
 
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final StringBuilder logBuffer = new StringBuilder();
-    private final AtomicInteger wsCount = new AtomicInteger();
-    private final AtomicInteger domCount = new AtomicInteger();
-    private final AtomicInteger netCount = new AtomicInteger();
+    private final ExecutorService ioPool = Executors.newSingleThreadExecutor();
 
-    private String probeScript = "";
-    private boolean documentStartInstalled = false;
+    private final ConcurrentLinkedQueue<String> pendingLines = new ConcurrentLinkedQueue<>();
+    private final ArrayDeque<String> recentLines = new ArrayDeque<>();
+    private final StringBuilder fullLog = new StringBuilder();
 
-    private static final int MAX_LOG_CHARS = 2_000_000;
-    private static final Pattern INTERESTING =
-            Pattern.compile("webcast|live|room|gift|comment|rank|viewer|im/fetch|message|event",
-                    Pattern.CASE_INSENSITIVE);
+    private String bootstrapScript = "";
+    private String fallbackProbe = "";
+    private boolean docStartInstalled = false;
+    private volatile boolean captureActive = false;
+    private volatile long captureUntilMs = 0L;
+    private volatile String probeVersion = "none";
+    private volatile String probeState = "OFFLINE";
 
-    private static final String DESKTOP_UA =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/131.0.0.0 Safari/537.36";
+    private final Runnable flushRunnable = new Runnable() {
+        @Override
+        public void run() {
+            flushLogs();
+            mainHandler.postDelayed(this, 400);
+        }
+    };
+
+    private final Runnable tickerRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (captureActive) {
+                long left = captureUntilMs - System.currentTimeMillis();
+                if (left <= 0) {
+                    captureActive = false;
+                    captureBtn.setText("CAPTURE 10s");
+                } else {
+                    captureBtn.setText(String.format(Locale.US, "%.1fs", left / 1000.0));
+                }
+            }
+            refreshStatus();
+            mainHandler.postDelayed(this, 300);
+        }
+    };
 
     @Override
     @SuppressLint({"SetJavaScriptEnabled", "AddJavascriptInterface"})
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        probeScript = readAsset("probe.js");
+        bootstrapScript = readAsset("bootstrap.js");
+        fallbackProbe = readAsset("probe_fallback.js");
+
         WebView.setWebContentsDebuggingEnabled(true);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.rgb(12, 14, 18));
+        root.setBackgroundColor(Color.rgb(10, 12, 16));
 
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setPadding(dp(6), dp(6), dp(6), dp(6));
-        bar.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout row1 = new LinearLayout(this);
+        row1.setOrientation(LinearLayout.HORIZONTAL);
+        row1.setPadding(dp(6), dp(5), dp(6), dp(3));
 
         userInput = new EditText(this);
         userInput.setSingleLine(true);
@@ -101,44 +125,47 @@ public class MainActivity extends Activity {
         userInput.setHintTextColor(Color.GRAY);
         userInput.setInputType(InputType.TYPE_CLASS_TEXT);
         userInput.setText(getPreferences(MODE_PRIVATE).getString("last_user", ""));
-        LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
-        bar.addView(userInput, inputLp);
+        row1.addView(userInput, new LinearLayout.LayoutParams(0, dp(48), 1f));
 
         Button openBtn = button("MỞ LIVE");
         openBtn.setOnClickListener(v -> openLive());
-        bar.addView(openBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        row1.addView(openBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
 
-        Button markBtn = button("MARK");
-        markBtn.setOnClickListener(v -> addLog("MARK", "========== USER MARK =========="));
-        bar.addView(markBtn, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
+        Button reloadBtn = button("RELOAD PROBE");
+        reloadBtn.setOnClickListener(v -> reloadProbe());
+        row1.addView(reloadBtn, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48)));
 
-        root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        root.addView(row1);
 
-        LinearLayout statusBar = new LinearLayout(this);
-        statusBar.setOrientation(LinearLayout.HORIZONTAL);
-        statusBar.setPadding(dp(8), 0, dp(8), dp(4));
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2.setPadding(dp(6), 0, dp(6), dp(4));
+
         statusView = new TextView(this);
         statusView.setTextColor(Color.rgb(116, 236, 161));
-        statusView.setTextSize(12f);
-        statusView.setText("SCBD LIVE PROBE V0.1 | ready");
-        statusBar.addView(statusView, new LinearLayout.LayoutParams(0, dp(28), 1f));
+        statusView.setTextSize(11f);
+        statusView.setGravity(Gravity.CENTER_VERTICAL);
+        row2.addView(statusView, new LinearLayout.LayoutParams(0, dp(46), 1f));
+
+        captureBtn = button("CAPTURE 10s");
+        captureBtn.setOnClickListener(v -> startCapture(10_000));
+        row2.addView(captureBtn);
 
         Button exportBtn = button("XUẤT LOG");
         exportBtn.setOnClickListener(v -> exportLog());
-        statusBar.addView(exportBtn);
-
-        Button copyBtn = button("COPY");
-        copyBtn.setOnClickListener(v -> copyLog());
-        statusBar.addView(copyBtn);
+        row2.addView(exportBtn);
 
         Button clearBtn = button("XÓA");
         clearBtn.setOnClickListener(v -> clearLog());
-        statusBar.addView(clearBtn);
+        row2.addView(clearBtn);
 
-        root.addView(statusBar);
+        root.addView(row2);
 
         webView = new WebView(this);
         webView.setBackgroundColor(Color.BLACK);
+
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -147,8 +174,12 @@ public class MainActivity extends Activity {
         s.setLoadsImagesAutomatically(true);
         s.setUseWideViewPort(true);
         s.setLoadWithOverviewMode(true);
-        s.setUserAgentString(DESKTOP_UA);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        s.setUserAgentString(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/131.0.0.0 Safari/537.36"
+        );
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
@@ -159,25 +190,15 @@ public class MainActivity extends Activity {
             try {
                 WebViewCompat.addDocumentStartJavaScript(
                         webView,
-                        probeScript,
+                        bootstrapScript,
                         Collections.singleton("*")
                 );
-                documentStartInstalled = true;
-                addLog("INIT", "Document-start injection: SUPPORTED");
+                docStartInstalled = true;
+                addLog("INIT", "document-start bootstrap installed");
             } catch (Throwable t) {
-                addLog("INIT", "Document-start injection failed: " + t);
+                addLog("INIT", "document-start install failed: " + t);
             }
-        } else {
-            addLog("INIT", "Document-start injection: NOT SUPPORTED; fallback onPageFinished");
         }
-
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public boolean onConsoleMessage(ConsoleMessage cm) {
-                addLog("CONSOLE", cm.message() + " @" + cm.lineNumber());
-                return true;
-            }
-        });
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -185,22 +206,13 @@ public class MainActivity extends Activity {
                 super.onPageFinished(view, url);
                 addLog("PAGE", "finished " + url);
 
-                // Safe fallback/reinstall. probe.js exits immediately if already installed.
-                view.evaluateJavascript(probeScript, null);
-                updateStatus("page ready");
-            }
+                // Fallback only if document-start is unavailable.
+                if (!docStartInstalled) {
+                    view.evaluateJavascript(bootstrapScript, null);
+                }
 
-            @Override
-            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-                try {
-                    String url = request.getUrl().toString();
-                    if (INTERESTING.matcher(url).find()) {
-                        addLog("NET_URL", request.getMethod() + " " + url);
-                        netCount.incrementAndGet();
-                        refreshCounters();
-                    }
-                } catch (Throwable ignored) {}
-                return super.shouldInterceptRequest(view, request);
+                // Try local hot probe first.
+                reloadProbe();
             }
 
             @Override
@@ -215,18 +227,16 @@ public class MainActivity extends Activity {
             }
         });
 
-        LinearLayout.LayoutParams webLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
-        root.addView(webView, webLp);
+        root.addView(webView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         logScroll = new ScrollView(this);
-        logScroll.setFillViewport(true);
-        logScroll.setBackgroundColor(Color.rgb(6, 7, 10));
+        logScroll.setBackgroundColor(Color.rgb(5, 6, 9));
 
         logView = new TextView(this);
-        logView.setTextColor(Color.rgb(214, 221, 230));
-        logView.setTextSize(10f);
-        logView.setPadding(dp(8), dp(6), dp(8), dp(6));
+        logView.setTextColor(Color.rgb(210, 218, 228));
+        logView.setTextSize(9f);
+        logView.setPadding(dp(8), dp(4), dp(8), dp(4));
         logView.setTextIsSelectable(true);
 
         logScroll.addView(logView, new ScrollView.LayoutParams(
@@ -234,19 +244,25 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
         root.addView(logScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(200)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(120)));
 
         setContentView(root);
 
-        addLog("INIT", "No cookies/passwords/localStorage are exported by this probe.");
-        addLog("INIT", "Use a unique comment such as SCBDTEST12345, then tap MARK before/after the event.");
-        refreshCounters();
+        addLog("INIT", "SCBD Dev Shell V1");
+        addLog("INIT", "Hot probe source: " + PROBE_URL);
+        addLog("INIT", "Build APK once. Future decoder/filter changes live in probe.js.");
+
+        mainHandler.post(flushRunnable);
+        mainHandler.post(tickerRunnable);
+
+        // Check local server immediately.
+        reloadProbe();
     }
 
     private Button button(String text) {
         Button b = new Button(this);
         b.setText(text);
-        b.setTextSize(11f);
+        b.setTextSize(9.5f);
         b.setAllCaps(false);
         return b;
     }
@@ -266,114 +282,198 @@ public class MainActivity extends Activity {
             }
         }
         while (s.startsWith("@")) s = s.substring(1);
-        s = s.replaceAll("[^A-Za-z0-9._-]", "");
-        return s;
+        return s.replaceAll("[^A-Za-z0-9._-]", "");
     }
 
     private void openLive() {
         String user = normalizeUser(userInput.getText().toString());
         if (user.isEmpty()) {
-            Toast.makeText(this, "Nhập @TikTok ID trước", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Nhập @TikTok ID", Toast.LENGTH_SHORT).show();
             return;
         }
+
         getPreferences(MODE_PRIVATE).edit().putString("last_user", user).apply();
-
-        wsCount.set(0);
-        domCount.set(0);
-        netCount.set(0);
-        refreshCounters();
-
-        String url = "https://www.tiktok.com/@" + user + "/live";
-        addLog("OPEN", url);
-        updateStatus("loading @" + user);
-        webView.loadUrl(url);
+        addLog("OPEN", "@" + user);
+        webView.loadUrl("https://www.tiktok.com/@" + user + "/live");
     }
 
-    private void updateStatus(String state) {
-        mainHandler.post(() ->
-                statusView.setText("SCBD LIVE PROBE V0.1 | " + state +
-                        " | docStart=" + (documentStartInstalled ? "YES" : "NO")));
+    private String httpGet(String urlText) throws Exception {
+        HttpURLConnection c = (HttpURLConnection) new URL(urlText).openConnection();
+        c.setConnectTimeout(1800);
+        c.setReadTimeout(2500);
+        c.setUseCaches(false);
+        c.setRequestProperty("Cache-Control", "no-cache");
+        c.setRequestProperty("Pragma", "no-cache");
+
+        int status = c.getResponseCode();
+        if (status < 200 || status >= 300) {
+            throw new IllegalStateException("HTTP " + status);
+        }
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(
+                c.getInputStream(), StandardCharsets.UTF_8));
+
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) {
+            sb.append(line).append('\n');
+        }
+        br.close();
+        c.disconnect();
+        return sb.toString();
     }
 
-    private void refreshCounters() {
+    private void reloadProbe() {
+        probeState = "LOADING";
+        refreshStatus();
+
+        ioPool.submit(() -> {
+            try {
+                String version;
+                try {
+                    version = httpGet(VERSION_URL + "?t=" + System.currentTimeMillis()).trim();
+                } catch (Throwable ignored) {
+                    version = "local";
+                }
+
+                String code = httpGet(PROBE_URL + "?t=" + System.currentTimeMillis());
+                final String v = version;
+
+                mainHandler.post(() -> {
+                    if (webView == null) return;
+
+                    String dispose =
+                            "try{if(window.__SCBD_LOCAL_PROBE__&&" +
+                            "window.__SCBD_LOCAL_PROBE__.dispose){" +
+                            "window.__SCBD_LOCAL_PROBE__.dispose();}" +
+                            "}catch(e){};";
+
+                    webView.evaluateJavascript(dispose + "\n" + code, value -> {
+                        probeVersion = v;
+                        probeState = "LOCAL";
+                        addLog("PROBE", "loaded local " + v);
+                        refreshStatus();
+                    });
+                });
+
+            } catch (Throwable t) {
+                mainHandler.post(() -> {
+                    probeState = "FALLBACK";
+                    probeVersion = "fallback-1";
+                    addLog("PROBE", "local server offline, using fallback: " + t.getMessage());
+
+                    if (webView != null) {
+                        webView.evaluateJavascript(fallbackProbe, null);
+                    }
+                    refreshStatus();
+                });
+            }
+        });
+    }
+
+    private void startCapture(long ms) {
+        if (webView == null) return;
+
+        captureActive = true;
+        captureUntilMs = System.currentTimeMillis() + ms;
+        addLog("MARK", "========== CAPTURE START ==========");
+
+        String js =
+                "(function(){try{" +
+                "if(window.__SCBD_LOCAL_PROBE__&&window.__SCBD_LOCAL_PROBE__.startCapture){" +
+                "window.__SCBD_LOCAL_PROBE__.startCapture(" + ms + ");return 'OK';" +
+                "}return 'NO_PROBE';" +
+                "}catch(e){return 'ERR:'+e;}})();";
+
+        webView.evaluateJavascript(js, value -> addLog("CAPTURE_CMD", String.valueOf(value)));
+
+        mainHandler.postDelayed(() -> {
+            captureActive = false;
+            if (captureBtn != null) captureBtn.setText("CAPTURE 10s");
+        }, ms + 250);
+    }
+
+    private void refreshStatus() {
         mainHandler.post(() -> {
-            String current = statusView.getText().toString();
-            int ix = current.indexOf(" | WS=");
-            if (ix >= 0) current = current.substring(0, ix);
-            statusView.setText(current +
-                    " | WS=" + wsCount.get() +
-                    " DOM=" + domCount.get() +
-                    " NET=" + netCount.get());
+            if (statusView == null) return;
+            statusView.setText(
+                    "DEV SHELL V1 | docStart=" + (docStartInstalled ? "YES" : "NO") +
+                    "\nProbe=" + probeState + " " + probeVersion
+            );
         });
     }
 
     private void addLog(String kind, String payload) {
-        mainHandler.post(() -> {
-            String time = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date());
-            String p = payload == null ? "" : payload;
-            if (p.length() > 14000) p = p.substring(0, 14000) + "…[cut]";
-            String line = "[" + time + "][" + kind + "] " + p + "\n";
+        String time = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(new Date());
+        String p = payload == null ? "" : payload;
+        if (p.length() > 6500) p = p.substring(0, 6500) + "…[cut]";
+        pendingLines.add("[" + time + "][" + kind + "] " + p);
+    }
 
-            logBuffer.append(line);
-            if (logBuffer.length() > MAX_LOG_CHARS) {
-                int remove = logBuffer.length() - (MAX_LOG_CHARS * 3 / 4);
-                logBuffer.delete(0, Math.max(0, remove));
-                logBuffer.insert(0, "[LOG TRIMMED]\n");
+    private void flushLogs() {
+        boolean changed = false;
+        String line;
+
+        while ((line = pendingLines.poll()) != null) {
+            changed = true;
+
+            fullLog.append(line).append('\n');
+            if (fullLog.length() > MAX_LOG_CHARS) {
+                int remove = fullLog.length() - (MAX_LOG_CHARS * 3 / 4);
+                fullLog.delete(0, Math.max(0, remove));
+                fullLog.insert(0, "[FULL LOG TRIMMED]\n");
             }
 
-            logView.setText(logBuffer.toString());
-            logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
-        });
+            recentLines.addLast(line);
+            while (recentLines.size() > DISPLAY_LINES) recentLines.removeFirst();
+        }
+
+        if (!changed || logView == null) return;
+
+        StringBuilder display = new StringBuilder();
+        for (String s : recentLines) display.append(s).append('\n');
+
+        logView.setText(display.toString());
+        logScroll.post(() -> logScroll.fullScroll(View.FOCUS_DOWN));
     }
 
     private void clearLog() {
-        logBuffer.setLength(0);
-        logView.setText("");
-        wsCount.set(0);
-        domCount.set(0);
-        netCount.set(0);
+        pendingLines.clear();
+        recentLines.clear();
+        fullLog.setLength(0);
+        if (logView != null) logView.setText("");
         addLog("CLEAR", "log cleared");
-        refreshCounters();
-    }
-
-    private void copyLog() {
-        ClipboardManager cb = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        cb.setPrimaryClip(ClipData.newPlainText("SCBD Live Probe", logBuffer.toString()));
-        Toast.makeText(this, "Đã copy log", Toast.LENGTH_SHORT).show();
     }
 
     private void exportLog() {
-        String name = "SCBD_LIVE_PROBE_" +
+        flushLogs();
+
+        String name = "SCBD_DEV_SHELL_" +
                 new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date()) +
                 ".txt";
-        byte[] bytes = logBuffer.toString().getBytes(StandardCharsets.UTF_8);
+
+        byte[] bytes = fullLog.toString().getBytes(StandardCharsets.UTF_8);
 
         try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Downloads.DISPLAY_NAME, name);
+            values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                ContentValues values = new ContentValues();
-                values.put(MediaStore.Downloads.DISPLAY_NAME, name);
-                values.put(MediaStore.Downloads.MIME_TYPE, "text/plain");
                 values.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-
-                Uri uri = getContentResolver().insert(
-                        MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
-
-                if (uri == null) throw new IllegalStateException("MediaStore insert failed");
-
-                try (OutputStream os = getContentResolver().openOutputStream(uri)) {
-                    if (os == null) throw new IllegalStateException("openOutputStream failed");
-                    os.write(bytes);
-                }
-                Toast.makeText(this, "Đã lưu Download/" + name, Toast.LENGTH_LONG).show();
-            } else {
-                File dir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
-                if (dir == null) throw new IllegalStateException("No external files dir");
-                File out = new File(dir, name);
-                try (FileOutputStream fos = new FileOutputStream(out)) {
-                    fos.write(bytes);
-                }
-                Toast.makeText(this, "Đã lưu " + out.getAbsolutePath(), Toast.LENGTH_LONG).show();
             }
+
+            Uri uri = getContentResolver().insert(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
+
+            if (uri == null) throw new IllegalStateException("MediaStore insert failed");
+
+            try (OutputStream os = getContentResolver().openOutputStream(uri)) {
+                if (os == null) throw new IllegalStateException("openOutputStream failed");
+                os.write(bytes);
+            }
+
+            Toast.makeText(this, "Đã lưu Download/" + name, Toast.LENGTH_LONG).show();
+
         } catch (Throwable t) {
             addLog("EXPORT_ERR", String.valueOf(t));
             Toast.makeText(this, "Xuất log lỗi: " + t.getMessage(), Toast.LENGTH_LONG).show();
@@ -382,29 +482,47 @@ public class MainActivity extends Activity {
 
     private String readAsset(String name) {
         try {
-            BufferedReader br = new BufferedReader(
-                    new InputStreamReader(getAssets().open(name), StandardCharsets.UTF_8));
+            BufferedReader br = new BufferedReader(new InputStreamReader(
+                    getAssets().open(name), StandardCharsets.UTF_8));
+
             StringBuilder sb = new StringBuilder();
             String line;
+
             while ((line = br.readLine()) != null) sb.append(line).append('\n');
             br.close();
             return sb.toString();
+
         } catch (Throwable t) {
-            return "try{SCBD.report('JS_ERR','asset load failed');}catch(e){}";
+            return "";
         }
     }
 
     public class JsBridge {
         @JavascriptInterface
         public void report(String kind, String payload) {
-            String k = kind == null ? "JS" : kind;
-            if (k.startsWith("WS_")) wsCount.incrementAndGet();
-            if ("DOM".equals(k)) domCount.incrementAndGet();
-            if (k.startsWith("FETCH_") || k.startsWith("XHR_") || "RESOURCE".equals(k)) {
-                netCount.incrementAndGet();
+            if ("PROBE_READY".equals(kind)) {
+                probeVersion = payload == null ? "unknown" : payload;
+                if ("FALLBACK".equals(probeState)) {
+                    probeState = "FALLBACK";
+                } else {
+                    probeState = "LOCAL";
+                }
+                refreshStatus();
             }
-            addLog(k, payload);
-            refreshCounters();
+
+            if ("CAPTURE_START".equals(kind)) {
+                captureActive = true;
+            }
+
+            if ("CAPTURE_END".equals(kind)) {
+                captureActive = false;
+                captureUntilMs = 0L;
+                mainHandler.post(() -> {
+                    if (captureBtn != null) captureBtn.setText("CAPTURE 10s");
+                });
+            }
+
+            addLog(kind == null ? "JS" : kind, payload);
         }
     }
 
@@ -419,10 +537,24 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        mainHandler.removeCallbacks(flushRunnable);
+        mainHandler.removeCallbacks(tickerRunnable);
+        ioPool.shutdownNow();
+
         if (webView != null) {
+            try {
+                webView.evaluateJavascript(
+                        "try{if(window.__SCBD_LOCAL_PROBE__&&" +
+                        "window.__SCBD_LOCAL_PROBE__.dispose){" +
+                        "window.__SCBD_LOCAL_PROBE__.dispose();}}catch(e){}",
+                        null
+                );
+            } catch (Throwable ignored) {}
+
             webView.removeJavascriptInterface("SCBD");
             webView.destroy();
         }
+
         super.onDestroy();
     }
 }
