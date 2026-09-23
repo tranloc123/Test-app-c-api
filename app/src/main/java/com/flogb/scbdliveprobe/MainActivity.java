@@ -248,9 +248,9 @@ public class MainActivity extends Activity {
 
         setContentView(root);
 
-        addLog("INIT", "SCBD Dev Shell V1");
+        addLog("INIT", "SCBD Dev Shell V2");
         addLog("INIT", "Hot probe source: " + PROBE_URL);
-        addLog("INIT", "Build APK once. Future decoder/filter changes live in probe.js.");
+        addLog("INIT", "Full-frame bridge enabled. Future decoder/filter changes live in probe.js.");
 
         mainHandler.post(flushRunnable);
         mainHandler.post(tickerRunnable);
@@ -397,7 +397,7 @@ public class MainActivity extends Activity {
         mainHandler.post(() -> {
             if (statusView == null) return;
             statusView.setText(
-                    "DEV SHELL V1 | docStart=" + (docStartInstalled ? "YES" : "NO") +
+                    "DEV SHELL V2 | docStart=" + (docStartInstalled ? "YES" : "NO") +
                     "\nProbe=" + probeState + " " + probeVersion
             );
         });
