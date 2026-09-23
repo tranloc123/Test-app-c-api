@@ -8,13 +8,16 @@
     } catch (_) {}
   };
 
-  const toB64 = (ab, maxBytes = 2048) => {
+  const toFullBinary = (ab) => {
     try {
       const u8 = new Uint8Array(ab);
-      const n = Math.min(u8.length, maxBytes);
-      let s = "";
-      for (let i = 0; i < n; i++) s += String.fromCharCode(u8[i]);
-      return { len: u8.length, sampleBytes: n, b64: btoa(s) };
+      const owned = u8.slice().buffer;
+      return {
+        len: u8.byteLength,
+        sampleBytes: u8.byteLength,
+        full: true,
+        buffer: owned
+      };
     } catch (e) {
       return { error: String(e) };
     }
@@ -64,7 +67,7 @@
               if (e.data instanceof ArrayBuffer) {
                 dispatch("__SCBD_WS_MESSAGE__", {
                   kind: "binary",
-                  data: toB64(e.data)
+                  data: toFullBinary(e.data)
                 });
                 return;
               }
@@ -76,7 +79,7 @@
                 );
                 dispatch("__SCBD_WS_MESSAGE__", {
                   kind: "binary",
-                  data: toB64(ab)
+                  data: toFullBinary(ab)
                 });
                 return;
               }
@@ -85,7 +88,7 @@
                 const ab = await e.data.arrayBuffer();
                 dispatch("__SCBD_WS_MESSAGE__", {
                   kind: "binary",
-                  data: toB64(ab)
+                  data: toFullBinary(ab)
                 });
                 return;
               }
